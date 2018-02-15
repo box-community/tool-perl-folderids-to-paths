@@ -1,0 +1,114 @@
+#!/usr/bin/perl -w
+
+# One-time script to match Box report containing folder IDs with folder names.
+
+use strict;
+use 5.010;
+
+# Required packages; use CPAN to install if missing
+use JSON;
+use Spreadsheet::XLSX;
+use Excel::Writer::XLSX;
+
+# Get the input and output spreadsheet names.
+my $ifn = shift || die "Must supply a spreadsheet to process\n";
+my $ofn = shift || die "Must supply a spreadsheet name for the results\n";
+
+# Open the first sheet in the spreadsheet.
+my $excel = Spreadsheet::XLSX->new($ifn);
+my $sheet = $excel->{Worksheet}->[0];
+
+# Open the output spreadsheet
+my $output = Excel::Writer::XLSX->new($ofn);
+my $outsheet = $output->add_worksheet();
+
+# Cache users and folders
+my %users;
+my %folders;
+
+# Symbolic column numbers
+my ($FILEID, $FILENAME, $FOLDERID, $UPLOADER, $UEID, $UENAME, $OWNER, $OEID, $OENAME, $CURRENT, $DELETED)
+    = 0 .. 99;
+
+# Minimal output formatting
+my $idfmt = $output->add_format();
+$idfmt->set_num_format('###############');
+$outsheet->set_column(0, 0, 16, $idfmt);
+$outsheet->set_column(1, 1, 40);
+$outsheet->set_column(2, 2, 14, $idfmt);
+$outsheet->set_column(3, 12, 15);
+$outsheet->set_column(11, 11, 40);
+
+my $hdrfmt = $output->add_format();
+$hdrfmt->set_bg_color('#355CB7');
+$hdrfmt->set_color('white');
+
+my $even = $output->add_format(bg_color => '#A6B9E1', num_format => '############');
+my $odd  = $output->add_format(bg_color => '#D0D9EF', num_format => '############');
+my @rowfmt = ($even, $odd);
+
+# Echo the header to output.
+my @header = map { $_ && ref $_ ? $_->Value : '' } @{shift @{$sheet->{Cells}}};
+push @header, 'uploader_path', 'uploader_name';
+$outsheet->write(0, 0, \@header, $hdrfmt);
+
+my $rownum = 1;
+ROW:
+for my $row (@{$sheet->{Cells}}) {
+   # Get the column values;
+   my @cols = map { $_ ? $_->Value : '' } @$row;
+   # Get the user that uploaded the file
+   my $userid = $cols[$UPLOADER];
+   # Look up the user if not already done.
+   unless ($users{$userid}) {
+      my $struct = boxcmd("box users search $userid");
+      $users{$userid} = $struct->{entries}->[0];
+      # say "Got user $users{$userid}->{name}";
+   }
+   # Get the user's Box ID.
+   my $ownerid = $users{$userid}->{id};
+
+   # Run up the parent links to the root.
+   my $current = $cols[$FOLDERID];
+   my @path;
+   while (1) {
+      # Look up the folder if not already done.
+      unless ($folders{$current}) {
+         my $struct = boxcmd("box folders get $current --as-user $ownerid");
+         no warnings qw(uninitialized);
+         if ($struct->{type} eq 'error') {
+            # Usually that the file or folder was trashed
+            push @path, $struct->{message};
+            last;
+         }
+         # say "Got folder $struct->{name}";
+         # Remove subentries to save space.
+         delete $struct->{entries};
+         $folders{$current} = $struct;
+      }
+      # Add the folder name to the path.
+      unshift @path, $folders{$current}->{name};
+      # Stop when we hit the user's root folder.
+      last unless $folders{$current}->{parent};
+      last if     $folders{$current}->{parent}->{id} == 0;
+      $current = $folders{$current}->{parent}->{id};
+   }
+
+   # Write the row to the output spreadsheet.
+   $outsheet->write($rownum++, 0, [@cols, join('/', @path), $users{$userid}->{name}], $rowfmt[$rownum % 2]);
+   # Let user know we are still working.
+   say join('/', @path, $cols[$FILENAME]);
+}
+
+$output->close;
+
+exit;
+
+sub boxcmd {
+   my $cmd = shift;
+   my $response = `$cmd`;
+   my $struct;
+   eval { $struct = decode_json($response) };
+   return $struct unless $@;
+   say "Invalid response from box command: $response";
+}
