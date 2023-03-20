@@ -1,3 +1,7 @@
+<img src="images/box-dev-logo-clip.png" 
+alt= “box-dev-logo” 
+style="margin-left:-10px;"
+width=40%;>
 # FolderInfo
 Read a spreadsheet distributed by Box with FolderIDs, and determine the folder path for each FolderID
 
